@@ -4,6 +4,18 @@
   "type": "module",
   "main": "lib/index.js",
   "description": "常驻 API 用量监控：DeepSeek/SiliconFlow/OpenCode Go/火山 Coding+Agent Plan 余额与配额，会话树 token 与花费（侧边栏入口 + 独立浮动窗）。",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "client-plugin",
+    "monitoring",
+    "api",
+    "usage",
+    "balance",
+    "dashboard",
+    "deepseek"
+  ],
   "author": "jcleener",
   "repository": {
     "type": "git",
