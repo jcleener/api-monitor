@@ -64,6 +64,16 @@ PRD.md            产品需求文档
 legacy/           早期手动粘贴版源码
 ```
 
+## 更新日志
+
+### v0.1.1
+
+- **stale-while-revalidate**：OpenCode Go（以及 DeepSeek / SiliconFlow / 火山 Coding / 火山 Agent）数据拉取中或失败时，不再显示占位符（`—`），而是保留并显示**上次成功读取的数据**，弱化显示并标注「↑ 显示上次数据（HH:MM 获取）」；恢复成功后自动切回实时数据。
+
+### v0.1.0
+
+- 首个公开版本：常驻 API 用量监控（DeepSeek / SiliconFlow / OpenCode Go / 火山引擎 余额与配额、会话树 token 与花费，侧边栏入口 + 独立浮动窗）。
+
 ## 许可证
 
 MIT © 2025 [jcleener](https://github.com/jcleener)
