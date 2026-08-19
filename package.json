@@ -1,0 +1,39 @@
+{
+  "name": "api-monitor",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "lib/index.js",
+  "description": "常驻 API 用量监控：DeepSeek/SiliconFlow/OpenCode Go/火山 Coding+Agent Plan 余额与配额，会话树 token 与花费（侧边栏入口 + 独立浮动窗）。",
+  "author": "jcleener",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jcleener/api-monitor.git"
+  },
+  "homepage": "https://github.com/jcleener/api-monitor#readme",
+  "bugs": {
+    "url": "https://github.com/jcleener/api-monitor/issues"
+  },
+  "license": "MIT",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-primitives"
+      ],
+      "platform": "web"
+    }
+  }
+}

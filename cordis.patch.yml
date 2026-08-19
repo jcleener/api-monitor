@@ -1,0 +1,9 @@
+# api-monitor — bundle patch layer.
+#
+# Mounting this package into the web profile composes the resident API usage
+# monitor: a sidebar-footer entry (above the Cordis panel button) plus a
+# Cordis-style floating window. Host half serves /api-monitor/* routes in the
+# dsh web process; browser half ships via exports["./client"].
+- insert:
+    - id: api-monitor
+      name: api-monitor
