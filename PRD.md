@@ -91,9 +91,19 @@ client 经 client sessions/workspaces 服务取当前活动会话 id（inspect �
 - 按供应商拆分：遍历会话 surface/事件，按 assistant 消息的 provider/model 归属分桶；请求次数 = 各桶成功 assistant 请求数。
 - 全树求和；快照 TTL 5–10s（避免高频重扫大会话树）。
 
-### 6.3 花费（仅 DeepSeek/SiliconFlow）
-`cost = uncachedInput×P_in + cacheRead×P_cr + cacheWrite×P_cw + output×P_out`（每 1M tokens）。
-单价表实现时以官方最新价播种用户实际使用的对话模型（DeepSeek V4 系列；SiliconFlow 常用项），`priceTable` 可覆盖；未知名模型 → `—`。订阅两家不显示花费。
+### 6.3 花费（仅 DeepSeek/SiliconFlow，已修复）
+`cost = uncachedInput×P_in + cacheRead×P_cr + cacheWrite×P_cw + output×P_out`（每 1M tokens，**CNY**）。
+
+**价格来源（v0.1.3 起）**：
+- **DeepSeek：官方定价页自动抓价**（`https://api-docs.deepseek.com/zh-cn/quick_start/pricing`）——剥 HTML 标签后正则解析 v4-flash/v4-pro 的缓存命中/未命中/输出在空闲/高峰两档的人民币单价，6h TTL 缓存，随【读取套餐】强制刷新。官方变更价格后插件自动跟随，无需改代码。
+- **SiliconFlow：内置种子价**（DeepSeek-V4-Flash ¥1/¥2）+ `priceTable` 覆盖。
+- 优先级：`priceTable[model]` → `priceTable[provider]` → 官方抓取价 → 内置默认价；未知名模型 → `—`。
+
+**峰谷定价**：日志无逐事件时间戳，无法按请求时刻归因 → 花费按两档分别计算，界面显示「会话花费预估：梁文峰 ¥X | 梁文谷 ¥Y」（高峰/空闲）；平铺价显示单值。
+
+**重试去重**：按 (turn,step) 取最后一次 usage，避免同一逻辑调用被重复计费（与 token-meter 口径一致）。
+
+订阅两家（OpenCode Go / 火山）不显示花费。
 
 ## 7. 数据流
 
