@@ -1,5 +1,7 @@
 # PRD：API 用量监控常驻插件（api-monitor）
 
+> ⚠️ 历史文档（v0.1.0 批准版）：自 v0.2.0 起 **SiliconFlow 已移除、新增 GLM Coding Plan 配额检测**（`{base}/api/monitor/usage/quota/limit`，凭据 `BIGMODEL_API_KEY`/`ZAI_API_KEY`）。当前行为以 README 与代码为准，本文保留原始规格供追溯。
+
 > 状态：已批准（2026-08，plan mode 审核通过）。交由创造模式（cordis preset）执行。
 > 实现时遵循官方 `cordis-plugin-development` 技能：先 cordis_inspect 核对真实服务签名与槽位契约，再写代码。
 

@@ -1,26 +1,26 @@
 # api-monitor
 
 > DSH（DeepSeek Harness）插件：**常驻 API 用量监控**。
-> 侧边栏底部常驻摘要 + 独立浮动窗，实时查看 DeepSeek / SiliconFlow 余额、OpenCode Go 与火山引擎（Coding Plan / Agent Plan）订阅配额，以及当前会话树（主会话 + 全部子代理）的 token 用量与花费。
+> 侧边栏底部常驻摘要 + 独立浮动窗，实时查看 DeepSeek 余额、GLM Coding Plan、OpenCode Go 与火山引擎（Coding Plan / Agent Plan）订阅配额，以及当前会话树（主会话 + 全部子代理）的 token 用量与花费。
 
 ## 功能
 
 - **余额与配额监控**：
   - DeepSeek — `GET api.deepseek.com/user/balance`
-  - SiliconFlow — `GET api.siliconflow.cn/v1/user/info`
+  - GLM Coding Plan（智谱 / Z.ai）— `GET {base}/api/monitor/usage/quota/limit`
   - OpenCode Go — `GET opencode.ai/zen/go/v1/usage`
   - 火山引擎 — `GetCodingPlanUsage` / `GetAFPUsage`（SigV4 签名，service = `ark`）
 - **会话树用量**：统计主会话与全部子代理的 token 用量与花费（价格表可配置，`priceTable` 覆盖）
 - **入口**：侧边栏底部 `.footArea`（Cordis 面板按钮上方）。宽侧栏显示**竖排多行摘要**（每家一行：状态色点 + 名称 + 数值，行数由「显示在入口」勾选控制）；侧栏收起（rail）时退化为圆形图标；点击弹出 **Cordis 风格浮动窗**（标题栏 + ✕ 关闭 + Esc 关闭 + 遮罩点外关闭）
 - **轮询**：默认 60s 可配置；拉取失败时**保留上次成功值**（stale-while-revalidate，弱化显示并标注获取时间）
-- **凭据**：经 `ctx.credentials.resolve()` 读取 `DEEPSEEK_API_KEY` / `SILICONFLOW_API_KEY` / `VISION_API_KEY` / `VOLCES_API_KEY`
+- **凭据**：经 `ctx.credentials.resolve()` 读取 `DEEPSEEK_API_KEY` / `BIGMODEL_API_KEY`（或 `ZAI_API_KEY`）/ `VISION_API_KEY` / `VOLCES_API_KEY`
 
 ## 状态灯配色
 
 | 场景 | 颜色 |
 |---|---|
-| DeepSeek / SiliconFlow 余额 **< `balanceWarn`（默认 10 元）** | 🔴 红 |
-| 周期用量（OpenCode Go / 火山 Coding / 火山 Agent）**剩余 ≤ 10%**（0% = 用尽） | 🔴 红 |
+| DeepSeek 余额 **< `balanceWarn`（默认 10 元）** | 🔴 红 |
+| 周期用量（GLM Coding Plan / OpenCode Go / 火山 Coding / 火山 Agent）**剩余 ≤ 10%**（0% = 用尽） | 🔴 红 |
 | 周期用量**剩余 ≤ 30%**（预警） | 🟡 黄 |
 | 其余正常 | 🟢 绿 |
 
@@ -65,9 +65,13 @@ dsh plugin --profile web add "github:jcleener/api-monitor#v0.1.2"
 2. 保存后立即重拉配额；若鉴权失败，区块会显示 `ResponseMetadata.Error` 中的具体错误（如 `SignatureDoesNotMatch` / `AccessDenied`）。
 3. 需要 IAM 具备用量查询权限；SigV4 使用 `region=cn-beijing`、`service=ark`。
 
-### 关于 SiliconFlow 余额
+### GLM Coding Plan 配置
 
-硅基流动新云平台（cloud.siliconflow.cn）的网页钱包余额**不通过 API 暴露**：`/v1/user/info` 仅反映 API-key 归属账号的旧口径余额。插件显示的是接口真实返回值；网页上的 45+ 之类的余额请以控制台为准。
+1. 在 `.credentials.yaml` 配置 `BIGMODEL_API_KEY`（国内 `open.bigmodel.cn`，推荐）或 `ZAI_API_KEY`（国际 `api.z.ai`），插件自动按凭据名选择端点；**无需 AK/SK**。
+2. 配额走智谱官方用量接口 `GET {base}/api/monitor/usage/quota/limit`（Bearer 鉴权），解析 `data.limits[]`：`unit=3` → 5 小时滚动窗口、`unit=6` → 周配额、`TIME_LIMIT` → 月度工具额度（有则显示），`data.level` 为套餐档位（lite/pro/…）。
+3. 浮动窗「GLM Coding Plan」区块显示套餐档位 + 三窗口剩余 %，入口行显示 `5小时|1周` 剩余；未订阅或未配置时区块内显示错误提示，不影响其他区块。
+
+> 历史说明：v0.1.x 曾支持 SiliconFlow 余额（`/v1/user/info`），因其仅反映 API-key 旧口径余额、与网页钱包不一致，已于 v0.2.0 移除。
 
 ## 工作原理
 
@@ -92,6 +96,12 @@ legacy/           早期动态版源码
 本地联调：改动 `lib/` 后 HMR 热载（客户端 CSS/JS 变更约 1s 生效）；宿主代码与补丁层变更需重启 `dsh web`。
 
 ## 更新日志
+
+### v0.2.0
+
+- **新增 GLM Coding Plan 配额检测**：智谱官方用量接口 `GET {base}/api/monitor/usage/quota/limit`（`open.bigmodel.cn` / `api.z.ai` 自动按凭据选择），显示套餐档位（`data.level`）与 5 小时 / 周 / 月（TIME_LIMIT，如有）三窗口剩余 %；会话 token 按供应商 `glm`（bigmodel / zhipu / glm / zai）分桶。凭据 `BIGMODEL_API_KEY`（或 `ZAI_API_KEY`）。
+- **移除 SiliconFlow**：余额接口仅为 API-key 旧口径、与网页钱包不一致，相关轮询 / 价格种子 / 入口与区块一并移除；`entryVisibility.siliconflow` 旧键在下次保存可见性时自动清理。
+- 花费预估仅保留 DeepSeek（GLM 走订阅套餐，不计 token 花费）。
 
 ### v0.1.3
 
