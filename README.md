@@ -1,127 +1,135 @@
-# api-monitor
+# api-monitor · 常驻 API 用量监控
 
-> DSH（DeepSeek Harness）插件：**常驻 API 用量监控**。
-> 侧边栏底部常驻摘要 + 独立浮动窗，实时查看 DeepSeek 余额、GLM Coding Plan、OpenCode Go 与火山引擎（Coding Plan / Agent Plan）订阅配额，以及当前会话树（主会话 + 全部子代理）的 token 用量与花费。
+> 一个常驻的「我还有多少钱 / 还剩多少额度」面板：侧边栏底部一个「⛽ API 用量」竖排入口，
+> 点开是一扇 Cordis 风格的浮动窗，里面同时显示 DeepSeek 余额、GLM Coding Plan 配额、
+> OpenCode Go 用量、火山 Coding / Agent Plan 配额，以及**当前会话树**的 token 与花费。
+>
+> 宿主半（`lib/index.js`）活在 dsh web 进程里，负责轮询各家接口 + 聚合会话用量，
+> 并通过同源 HTTP 路由 `/api-monitor/*` 把数据交给浏览器半（`lib/client.js`）。
 
-## 功能
+## 特性
 
-- **余额与配额监控**：
-  - DeepSeek — `GET api.deepseek.com/user/balance`
-  - GLM Coding Plan（智谱 / Z.ai）— `GET {base}/api/monitor/usage/quota/limit`
-  - OpenCode Go — `GET opencode.ai/zen/go/v1/usage`
-  - 火山引擎 — `GetCodingPlanUsage` / `GetAFPUsage`（SigV4 签名，service = `ark`）
-- **会话树用量**：统计主会话与全部子代理的 token 用量与花费（价格表可配置，`priceTable` 覆盖）
-- **入口**：侧边栏底部 `.footArea`（Cordis 面板按钮上方）。宽侧栏显示**竖排多行摘要**（每家一行：状态色点 + 名称 + 数值，行数由「显示在入口」勾选控制）；侧栏收起（rail）时退化为圆形图标；点击弹出 **Cordis 风格浮动窗**（标题栏 + ✕ 关闭 + Esc 关闭 + 遮罩点外关闭）
-- **轮询**：默认 60s 可配置；拉取失败时**保留上次成功值**（stale-while-revalidate，弱化显示并标注获取时间）
-- **凭据**：经 `ctx.credentials.resolve()` 读取 `DEEPSEEK_API_KEY` / `BIGMODEL_API_KEY`（或 `ZAI_API_KEY`）/ `VISION_API_KEY` / `VOLCES_API_KEY`
+- **一个入口看全部**：侧边栏底部竖排摘要（每个供应商一行 + 状态点），点开浮动窗看明细。
+- **5 路供应商轮询**：DeepSeek 余额、GLM（智谱 / Z.ai）配额、OpenCode Go 用量、
+  火山 Coding Plan（`GetCodingPlanUsage`）、火山 Agent Plan（`GetAFPUsage`）。
+- **stale-while-revalidate**：每轮轮询从上一轮结果起步，接口超时/失败时面板显示
+  「↑ 显示上次数据（时间 获取）」而不是占位横杠。
+- **会话树用量与花费**：根会话 + `subagents.listDescendants()` 的子代理会话一起折叠；
+  总量取 token-meter 的 `tokenUsage` 投影口径，按来源（provider/model）分桶，仅 DeepSeek 计价。
+- **峰谷分时计价**：按每次 `assistant/message` 事件自带的 `time` 判定高峰/空闲
+  （北京时间周一至周五 9:00-12:00、14:00-18:00 为高峰），高峰/空闲分别给出用量与金额。
+- **官方价格自动抓取**：正则解析 DeepSeek 中文定价页，6 小时 TTL；解析失败或数字不合理时
+  保留内置价目表，不回退成错误数字。
+- **零第三方依赖**：仅 Node 内置能力（`fetch` / `crypto.subtle`）与 `@deepseek-ai/schemastery`；
+  火山签名用 `crypto.subtle` 手写 SigV4。
 
-## 状态灯配色
+## 启用方式
 
-| 场景 | 颜色 |
-|---|---|
-| DeepSeek 余额 **< `balanceWarn`（默认 10 元）** | 🔴 红 |
-| 周期用量（GLM Coding Plan / OpenCode Go / 火山 Coding / 火山 Agent）**剩余 ≤ 10%**（0% = 用尽） | 🔴 红 |
-| 周期用量**剩余 ≤ 30%**（预警） | 🟡 黄 |
-| 其余正常 | 🟢 绿 |
+`cordis.patch.yml` 是 bundle patch 层，内容就是一行挂载：
 
-> 周期用量显示的是**剩余百分比**（100 − 已用），按三个窗口（5小时/周/月）中**最低的剩余**决定颜色——任一窗口告急即亮警示。
-
-## 安装
-
-在目标电脑的 DSH 环境执行：
-
-```bash
-dsh plugin --profile web add "github:jcleener/api-monitor"
+```yaml
+- insert:
+    - id: api-monitor
+      name: api-monitor
 ```
 
-或固定版本：
+- **宿主依赖的服务**：`apply()` 内 `ctx.inject([...])` 要求
+  `settings` / `credentials` / `subagents` / `sessions` / `sessionProjections` / `webServer`
+  六者齐备，否则宿主半不激活、路由也不注册。
+- **浏览器半发现**：靠 `package.json` 的 `dsh.bundle.patch` 与 `dsh.client`
+  （`platform: "web"`），浏览器半从 `exports["./client"]` 载入。
+- 把包放进 profile 的 `node_modules` 并追加上面的 insert 行后，**需要重启实例**；
+  浏览器半与宿主半一样随实例加载（本仓库未附带安装脚本）。
+- 改动 `pollIntervalSeconds` 后需再次重启：轮询定时器在 `apply()` 时按当时的配置值建立一次。
 
-```bash
-dsh plugin --profile web add "github:jcleener/api-monitor#v0.1.2"
+## 配置项
+
+宿主 `settings.register('api-monitor', SCHEMA)` 注册的 schema：
+
+| 字段 | 类型 | 默认值 | 含义 |
+|---|---|---|---|
+| `volcesAccessKeyId` | string | `''` | 火山引擎 AccessKey ID（Coding 与 Agent Plan 共用） |
+| `volcesSecretAccessKey` | string（secret） | `''` | 火山引擎 SecretKey |
+| `volcesTier` | string | `'auto'` | 套餐档位；**仅保存与回显**，代码中未见用于任何请求 |
+| `pollIntervalSeconds` | number | `60` | 轮询间隔秒；apply 时读一次，实际下限 20 秒 |
+| `warnPercent` | number | `70` | 预警阈值（已用 %，剩余 ≤ 100−该值 变黄） |
+| `dangerPercent` | number | `90` | 危险阈值（已用 %，剩余 ≤ 100−该值 变红） |
+| `balanceWarn` | number | `10` | 余额低于该值（CNY）标红 |
+| `priceTable` | dict(any) | `{}` | 单价覆盖表；支持平铺 `{in,cr,cw,out}`（旧键 `pi/pcr/pcw/po`）或 `{peak,offPeak}` 两种形态 |
+| `showCacheHitRate` | boolean | `true` | 面板是否显示「缓存命中率」行 |
+| `showResetTime` | boolean | `false` | 在配置里下发；**客户端代码未读取该字段** |
+| `entryVisibility` | object | 六项全 `true` | 各区块是否显示在侧边栏入口：`deepseek` / `glm` / `opencodeGo` / `qwen` / `volcesCoding` / `volcesAgent` |
+
+浮动窗内可直接改的只有：火山 AK/SK（「key配置」）、套餐档位下拉、每个区块的「显示在入口」勾选。
+`priceTable` / `pollIntervalSeconds` / 三个阈值 / `showCacheHitRate` 没有面板 UI，需直接改设置值。
+
+## 主要能力
+
+**宿主半**
+
+- 轮询并缓存 5 个数据源：`state.deepseek` / `glm` / `opencode` / `volcesCoding` / `volcesAgent`。
+  凭证经 `credentials.resolve()` 读取：`DEEPSEEK_API_KEY`、`BIGMODEL_API_KEY` 或 `ZAI_API_KEY`、
+  `VISION_API_KEY`、`VOLCES_API_KEY`（仅用于标记已配置）。
+- 会话用量：`subagents.listDescendants(rootId)` 收集 `kind === 'child'` 的子会话，
+  总量取 `sessionProjections.snapshot(s).values.tokenUsage`，
+  来源桶按 `assistant/message` 的 `source.provider` / `source.model` 归并，
+  并用 `llm/retry-started` 做替换冲销（与 token-meter 投影同口径）。快照有 8 秒缓存。
+- 同源 HTTP 路由（`webServer.register`）：
+
+  | 方法 | 路径 | 说明 |
+  |---|---|---|
+  | GET | `/api-monitor/snapshot?root=<会话ID>` | 供应商状态 + 会话用量 + 生效配置；**未做同源校验** |
+  | GET | `/api-monitor/config` | 生效配置摘要（含 `volcesKeyConfigured`） |
+  | POST | `/api-monitor/refresh` | 强制刷新官方价格 + 立刻轮询全部；校验同源 |
+  | POST | `/api-monitor/set-volces-keys` | 写入 AK/SK 并立即重查火山；校验同源 |
+  | POST | `/api-monitor/set-tier` | 写入 `volcesTier`；校验同源 |
+  | POST | `/api-monitor/set-visibility` | 写入 `entryVisibility`，只接受 6 个已知键；校验同源 |
+
+- **未注册**任何 model 工具、命令或事件监听；对外只有上面的 HTTP 路由与设置命名空间。
+
+**浏览器半**
+
+- 向 `sidebar.footer.action` 注册一个 slot：`id: "api-monitor"`、`order: -20`、`label: "API 用量"`。
+  窄侧边栏时退化为一个圆形图标按钮（`wide === false` 分支）。
+- 每 **8000 ms** 拉一次 `/api-monitor/snapshot`（带当前会话 id），并在面板里做刷新/改配置后的重载。
+- 注入一段组件作用域 CSS（`style[data-plugin-css="api-monitor/styles.css"]`），面板宽度固定 420px、
+  最大高度 60vh；再点入口或点遮罩、按 Esc 关闭。
+
+## 文件结构
+
+```
+api-monitor/
+├── README.md            # 本文件
+├── package.json         # name/version 0.2.6；dsh.bundle.patch 指向 cordis.patch.yml；dsh.client（web）
+├── cordis.patch.yml     # bundle patch 层：一行 insert 挂载 id/name = api-monitor
+└── lib/
+    ├── index.js         # 宿主半：settings 命名空间 + 5 路轮询 + 会话树聚合 + /api-monitor/* 路由
+    └── client.js        # 浏览器半（预构建产物，window.__ModuleLoader__.load 工厂）：侧边栏入口 + 浮动窗
 ```
 
-安装后重启 `dsh web`，侧边栏底部即出现监控入口。插件为**静态常驻**：随 DSH 启动自动加载，无需在 Cordis 面板中手动启用/授权，配置持久化于 `~/.dsh/settings.yaml` 与 `.credentials.yaml`。
+## 备注 / 已知限制
 
-> 早期「手动粘贴到 Cordis 面板」的动态版源码与恢复步骤保留在 [`legacy/`](./legacy/)，已不推荐使用。
-
-## 配置
-
-设置命名空间 `api-monitor`（DSH 设置页或 `~/.dsh/settings.yaml`）：
-
-| 键 | 默认 | 说明 |
-|---|---|---|
-| `volcesAccessKeyId` / `volcesSecretAccessKey` | 空 | 火山引擎 AK/SK（**配额查询专用**，与推理用 `VOLCES_API_KEY` 不同；`role('secret')` 脱敏） |
-| `volcesTier` | `auto` | 火山档位（`auto`/`lite`/`pro`，Agent Plan 另含 `small/medium/large/max`） |
-| `pollIntervalSeconds` | `60` | 轮询间隔（秒） |
-| `warnPercent` / `dangerPercent` | `70` / `90` | 已用%阈值（用于推算剩余%的告警/危险档） |
-| `balanceWarn` | `10` | 余额预警阈值（元） |
-| `priceTable` | `{}` | 模型价格表（`{ "模型ID": { pi, pcr, pcw, po } }`，每 1M tokens USD） |
-| `showCacheHitRate` / `showResetTime` | `true` / `false` | 是否显示缓存命中率 / 重置时间 |
-| `entryVisibility.*` | `true` | 各供应商是否显示在入口 |
-
-### 火山引擎 AK/SK 配置
-
-1. 在浮动窗的「火山 Coding Plan」/「火山 Agent Plan」区块点 **key配置**，输入 AccessKey ID 与 SecretKey，保存（两区块共用一份）。
-2. 保存后立即重拉配额；若鉴权失败，区块会显示 `ResponseMetadata.Error` 中的具体错误（如 `SignatureDoesNotMatch` / `AccessDenied`）。
-3. 需要 IAM 具备用量查询权限；SigV4 使用 `region=cn-beijing`、`service=ark`。
-
-### GLM Coding Plan 配置
-
-1. 在 `.credentials.yaml` 配置 `BIGMODEL_API_KEY`（国内 `open.bigmodel.cn`，推荐）或 `ZAI_API_KEY`（国际 `api.z.ai`），插件自动按凭据名选择端点；**无需 AK/SK**。
-2. 配额走智谱官方用量接口 `GET {base}/api/monitor/usage/quota/limit`（Bearer 鉴权），解析 `data.limits[]`：`unit=3` → 5 小时滚动窗口、`unit=6` → 周配额、`TIME_LIMIT` → 月度工具额度（有则显示），`data.level` 为套餐档位（lite/pro/…）。
-3. 浮动窗「GLM Coding Plan」区块显示套餐档位 + 三窗口剩余 %，入口行显示 `5小时|1周` 剩余；未订阅或未配置时区块内显示错误提示，不影响其他区块。
-
-> 历史说明：v0.1.x 曾支持 SiliconFlow 余额（`/v1/user/info`），因其仅反映 API-key 旧口径余额、与网页钱包不一致，已于 v0.2.0 移除。
-
-## 工作原理
-
-- **Host 半段**（`lib/index.js`）常驻 dsh web 进程：
-  - 注册 `api-monitor` 配置命名空间（真实 schemastery schema，`role('secret')` 原生脱敏）；
-  - 60s 轮询 5 家数据（原生 `fetch`；火山 SigV4 用 `crypto.subtle` 计算 HMAC-SHA256）；
-  - 聚合会话树 token/花费（`sessionProjections.tokenUsage` + `assistant/message` 事件按供应商分桶）；
-  - 经 `webServer.register` 暴露同源路由：`/api-monitor/snapshot|config|refresh|set-volces-keys|set-tier|set-visibility`。
-- **Client 半段**（`lib/client.js`）以 `window.__ModuleLoader__.load` factory 加载，注册 `sidebar.footer.action` 槽（order -20），数据经 fetch 同源路由获取。
-
-## 开发 / 结构
-
-```
-lib/index.js      Host 半段（ESM，原生 fetch + crypto.subtle）
-lib/client.js     Client 半段（__ModuleLoader__ factory，React.createElement）
-cordis.patch.yml  加载器补丁层（insert 声明）
-package.json      包清单（dsh.client 声明浏览器端打包）
-PRD.md            产品需求文档
-legacy/           早期动态版源码
-```
-
-本地联调：改动 `lib/` 后 HMR 热载（客户端 CSS/JS 变更约 1s 生效）；宿主代码与补丁层变更需重启 `dsh web`。
-
-## 更新日志
-
-### v0.2.0
-
-- **新增 GLM Coding Plan 配额检测**：智谱官方用量接口 `GET {base}/api/monitor/usage/quota/limit`（`open.bigmodel.cn` / `api.z.ai` 自动按凭据选择），显示套餐档位（`data.level`）与 5 小时 / 周 / 月（TIME_LIMIT，如有）三窗口剩余 %；会话 token 按供应商 `glm`（bigmodel / zhipu / glm / zai）分桶。凭据 `BIGMODEL_API_KEY`（或 `ZAI_API_KEY`）。
-- **移除 SiliconFlow**：余额接口仅为 API-key 旧口径、与网页钱包不一致，相关轮询 / 价格种子 / 入口与区块一并移除；`entryVisibility.siliconflow` 旧键在下次保存可见性时自动清理。
-- 花费预估仅保留 DeepSeek（GLM 走订阅套餐，不计 token 花费）。
-
-### v0.1.3
-
-- **修复会话花费高估（约 2 倍）**：单价表改为人民币口径，DeepSeek 走官方定价页自动抓价（api-docs.deepseek.com/zh-cn/quick_start/pricing，正则解析 v4-flash/v4-pro 峰谷价，6h 缓存，随【读取套餐】强制刷新）。此前缓存命中按 ¥0.20/M 计价（实际 ¥0.05–0.1），是 agent 编码会话花费高估的主因。
-- **花费展示改为预估区间**：峰谷定价无法按请求时刻归因，显示「会话花费预估：梁文峰 ¥X | 梁文谷 ¥Y」（高峰/空闲各一档）；平铺价显示单值。
-- **重试去重**：会话 token 统计按 (turn,step) 取最后一次 usage，避免同一逻辑调用（重试/失败重发）被重复计费。
-- SiliconFlow 价格仍为内置种子值（DeepSeek-V4-Flash ¥1/¥2）+ 可在 settings 的 priceTable 覆盖；未知名模型显示「—」。
-
-### v0.1.2
-
-- **修复状态灯方向**：周期用量（OpenCode Go / 火山 Coding / 火山 Agent）按**剩余%**上色——剩余 ≤10% 红、≤30% 黄、否则绿（此前按剩余越高越红，与"0% = 用尽"语义相反）。
-
-### v0.1.1
-
-- **stale-while-revalidate**：数据拉取中或失败时，保留并显示**上次成功读取的数据**（弱化显示并标注「↑ 显示上次数据（HH:MM 获取）」），恢复成功后自动切回实时。
-
-### v0.1.0
-
-- 首个公开版本：常驻 API 用量监控（DeepSeek / SiliconFlow / OpenCode Go / 火山引擎 余额与配额、会话树 token 与花费，侧边栏入口 + 独立浮动窗）。
-
-## 许可证
-
-MIT © 2025 [jcleener](https://github.com/jcleener)
+- **声明依赖与实际 require 不一致**：`package.json` 的 `dsh.client.inject` 声明了
+  `@deepseek-ai/dsh-client-locale`、`@deepseek-ai/dsh-client-runtime`、
+  `@deepseek-ai/dsh-client-ui-primitives` 三项，但 `lib/client.js` 只 `require("react")`；
+  它也没有注册 locale 字典，面板文案（「key配置」「读取套餐」「显示在入口」等）是硬编码中文。
+- **面板底部时间文案与实现不符**：浮动窗固定显示「每 60s 自动刷新」，
+  而客户端实际是 8000 ms 轮询、宿主定时器取决于 `pollIntervalSeconds`（下限 20 秒）。
+- **`volcesTier` 是死配置**：可在面板下拉选择并持久化，但宿主从未把它用于请求或解析。
+- **`showResetTime` 无人消费**：schema 与 `/config`、snapshot 都会带出，客户端不读。配额的重置时间
+  在宿主 `parseQuotaRows` 里读成了 `reset`，但未进入对外快照。
+- **`qwen` 区块没有对应的宿主轮询**：`entryVisibility.qwen` 只控制侧边栏是否显示，
+  Qwen 数据来自会话桶（token / 调用次数），额度行在客户端写死为「接口不可查」并给一个外部控制台链接。
+  因此 `state` 里只有 5 个供应商条目，而可见性键有 6 个。
+- **`pollIntervalSeconds` 只在 apply 时生效**（`Math.max(20, ...)`），改小/改大都要重启插件；
+  客户端快照轮询 8 秒也是写死的。
+- **硬编码内容**：官方定价页 URL `https://api-docs.deepseek.com/zh-cn/quick_start/pricing`、
+  内置价目表（注释标注按 2026-09-11 官方定价页校准，含峰谷两档）、
+  OpenCode 请求使用的伪造 Chrome User-Agent、火山签名固定 `open.volcengineapi.com` 与 `cn-beijing` / `ark`。
+- **依赖 DSH 内部 CSS 类名**：客户端 CSS 里有一条
+  `.hHd-Xa_root:not(.hHd-Xa_collapsed) .hHd-Xa_footerActions{...}` —— 直接绑定侧边栏的哈希类名，
+  壳层类名一变，竖排布局就会失效（功能不崩，只影响排版）。
+- **会话来源归因需要 `source.provider`**：没有路由信息的事件只进总量、不进来源桶，
+  所以「各来源相加 ≤ 总览总量」是预期行为。
+- 宿主每轮轮询都用 `catch` 吞掉异常并写 `entry.error`（如「未配置」「HTTP 401」「接口错误」），
+  面板只显示这一句短文案，日志里没有逐次堆栈（价格抓取失败会 `console.warn`）。
