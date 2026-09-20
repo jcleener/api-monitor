@@ -7,6 +7,15 @@
 > 宿主半（`lib/index.js`）活在 dsh web 进程里，负责轮询各家接口 + 聚合会话用量，
 > 并通过同源 HTTP 路由 `/api-monitor/*` 把数据交给浏览器半（`lib/client.js`）。
 
+## 兼容性
+
+- **DSH 0.1.6-alpha.2：可用**（2026-09-20 实测）。
+  该版本删除了 `SessionListState.current`，因此「当前会话 id」不再能从列表状态里直接读；客户端已改为
+  由主视图保留标记推导 —— `byId[id].retainedBy.mainView > 0`，与上游 `dsh-client-ui-workspace` 的
+  `mainSessionId()` 同款表达式；同时保留 `s.current` 作为回退，故 **0.1.5-rc.1 与 0.1.6-alpha.2 双向兼容**。
+- 症状备忘：若该取法失效，表现为「余额正常、但**本次会话 token / 花费恒为 0**」——因为 `hostGet` 会把
+  `null` 参数丢掉，请求退化成无 `root`，宿主随即走全零分支（静默，无报错）。
+
 ## 特性
 
 - **一个入口看全部**：侧边栏底部竖排摘要（每个供应商一行 + 状态点），点开浮动窗看明细。
