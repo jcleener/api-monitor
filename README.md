@@ -13,6 +13,12 @@
   该版本删除了 `SessionListState.current`，因此「当前会话 id」不再能从列表状态里直接读；客户端已改为
   由主视图保留标记推导 —— `byId[id].retainedBy.mainView > 0`，与上游 `dsh-client-ui-workspace` 的
   `mainSessionId()` 同款表达式；同时保留 `s.current` 作为回退，故 **0.1.5-rc.1 与 0.1.6-alpha.2 双向兼容**。
+- **DSH 0.1.7-rc.1：可用**（2026-09-24 实测）。
+  插件配置已迁到 0.1.7 的「Loader 条目 `config:`」模型（`export const Config` + `apply(ctx, config)` +
+  `settings.configure({ auto: true }, ctx.fiber)` 自动设置页 + `configEditor.edit` 落盘到 profile patch）。
+  另修一处观感回归：浮窗 `.am-panel` 原用 `--dsw-specific-menu`，该 token 在 0.1.7 由不透明改为半透明
+  （浅 `#f8f9fa94` / 深 `#30313680`，官方菜单另配 `backdrop-filter` 做毛玻璃），本插件没配模糊
+  → 面板透出背后内容；已改用不透明的 `--dsw-alias-bg-layer-3`。
 - 症状备忘：若该取法失效，表现为「余额正常、但**本次会话 token / 花费恒为 0**」——因为 `hostGet` 会把
   `null` 参数丢掉，请求退化成无 `root`，宿主随即走全零分支（静默，无报错）。
 
