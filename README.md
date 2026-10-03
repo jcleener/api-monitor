@@ -5,7 +5,7 @@
 > - `code/` 运行代码 ｜ `tests/` 测试代码 ｜ `docs/` 开发文档 ｜ `reference/` 参考资料
 > - `package.json` / `cordis.patch.yml` / `README.md` / `LICENSE` 是包契约文件，**必须留在本目录根**
 > - 状态：**休眠** ｜ 运行实体：`~/.dsh/profiles/desktop/plugins/api-monitor/`
-> - 本目录是**备份 + 开发文档存放处**；在此改动**不会自动生效**，需同步到 profile 并重启实例
+> - 本目录是**备份 + 开发文档存放处**，**不在这里开发**：要改代码请改运行实体，验证通过后再回写到这里
 
 > 一个常驻的「我还有多少钱 / 还剩多少额度」面板：侧边栏底部一个「⛽ API 用量」竖排入口，
 > 点开是一扇 Cordis 风格的浮动窗，里面同时显示 DeepSeek 余额、GLM Coding Plan 配额、
