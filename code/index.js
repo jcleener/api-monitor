@@ -21,10 +21,14 @@ const SCHEMA = z.object({
 	priceTable: z.dict(z.any()).default({}),
 	showCacheHitRate: z.boolean().default(true),
 	showResetTime: z.boolean().default(false),
+	// Command Code（provider id `command`，配置里的显示名是 command goat）月度额度上限（美元）。
+	// 0 = 自动：按 windowLimits 的 5 小时/周 cap 反查套餐档位再取其月度额度。
+	commandMonthlyCap: z.number().default(0),
 	entryVisibility: z.object({
 		deepseek: z.boolean().default(true),
 		glm: z.boolean().default(true),
 		opencodeGo: z.boolean().default(true),
+		command: z.boolean().default(true),
 		qwen: z.boolean().default(true),
 		volcesCoding: z.boolean().default(true),
 		volcesAgent: z.boolean().default(true),
@@ -60,6 +64,99 @@ const DEFAULT_PRICES = {
 		offPeak: { in: 4.5, cr: 0.15, cw: 0, out: 13.5 },
 	},
 };
+
+// ---- Command Code（command goat / GOAT 套餐）----
+// 官方口径（https://commandcode.ai/docs/resources/pricing-limits）：订阅额度按「信用值」计，
+// 除了按月重置的月度额度，另有 5 小时与 7 天两个滚动窗口，各按月度额度的固定比例封顶。
+// `GET /alpha/billing/credits` 只回「还剩多少」和两个窗口的 `{used, cap}`，**不回月度上限**，
+// 因此月度额度要靠 (5h cap, 周 cap) 这对数字反查套餐档位——下表即官方各档位的原始数字。
+const COMMAND_PLANS = [
+	{ name: 'Go', five: 2, weekly: 5, monthly: 10 },
+	{ name: 'Team Pro', five: 12, weekly: 24, monthly: 40 },
+	{ name: 'GOAT', five: 14, weekly: 35, monthly: 70 },
+	{ name: 'Pro', five: 16, weekly: 40, monthly: 80 },
+	{ name: 'Max 10x', five: 45, weekly: 90, monthly: 150 },
+	{ name: 'Max 20x', five: 90, weekly: 180, monthly: 300 },
+];
+// 按 (5h cap, 周 cap) 精确匹配；周 cap 缺失时退化为只认 5h cap（各档位 5h cap 互不相同）。
+function commandPlan(fiveCap, weeklyCap) {
+	const f = num(fiveCap, NaN);
+	if (!Number.isFinite(f) || f <= 0) return null;
+	const w = num(weeklyCap, NaN);
+	return COMMAND_PLANS.find((p) => p.five === f && (!Number.isFinite(w) || p.weekly === w))
+		|| COMMAND_PLANS.find((p) => p.five === f)
+		|| null;
+}
+/**
+ * 把 `/alpha/billing/credits` 的响应折算成三个「剩余 %」（口径与 GLM 面板一致：展示剩余）。
+ * 纯函数，便于直接用真实响应做回归。
+ *
+ * @param j - `/alpha/billing/credits` 的 JSON。
+ * @param cfgCap - 配置项 `commandMonthlyCap`；>0 时压过档位反查。
+ * @param spent - `/alpha/usage/summary` 的 `totalCost`；只有档位与配置都给不出上限时才需要。
+ * @returns 三个剩余百分比（null = 该窗口取不到）、档位名、月度上限与剩余额度、两个窗口的重置时刻。
+ */
+function commandReadings(j, cfgCap, spent) {
+	const credits = (j && j.credits) || {};
+	const win = (j && j.windowLimits) || {};
+	const monthlyRemaining = num(credits.monthlyCredits, NaN);
+	const fiveHour = win.fiveHour || null;
+	const weeklyWin = win.weekly || null;
+	const windowLeft = (w) => {
+		if (!w) return null;
+		const cap = num(w.cap, NaN);
+		if (!(cap > 0)) return null;
+		return pctLeft((num(w.used, 0) / cap) * 100);
+	};
+	const plan = commandPlan(fiveHour && fiveHour.cap, weeklyWin && weeklyWin.cap);
+	const monthlyCap = num(cfgCap, 0) > 0 ? num(cfgCap, 0) : (plan ? plan.monthly : 0);
+	let monthly = null;
+	if (monthlyCap > 0 && Number.isFinite(monthlyRemaining)) {
+		monthly = pctLeft(((monthlyCap - monthlyRemaining) / monthlyCap) * 100);
+	} else if (Number.isFinite(monthlyRemaining) && spent !== null && spent !== undefined) {
+		// 档位认不出的兜底：本期花费与剩余额度一起还原总池。
+		const remaining = monthlyRemaining + num(credits.purchasedCredits, 0) + num(credits.freeCredits, 0);
+		const total = remaining + num(spent, 0);
+		if (total > 0) monthly = pctLeft((num(spent, 0) / total) * 100);
+	}
+	const stamp = (w) => (w && Number.isFinite(num(w.resetAt, NaN)) ? num(w.resetAt, 0) : null);
+	return {
+		five: windowLeft(fiveHour),
+		weekly: windowLeft(weeklyWin),
+		monthly,
+		plan: plan ? plan.name : null,
+		monthlyCap: monthlyCap > 0 ? monthlyCap : null,
+		monthlyCredits: Number.isFinite(monthlyRemaining) ? monthlyRemaining : null,
+		fiveResetAt: stamp(fiveHour),
+		weeklyResetAt: stamp(weeklyWin),
+	};
+}
+/**
+ * 把 {@link commandReadings} 的结果落到 state 条目上（stale-while-revalidate）。
+ *
+ * 只有本轮**真的取到至少一个窗口**时才写数值与档位元数据；三个窗口全空视为本轮失败，
+ * 一个字段都不动，让 beginPoll 保留的上一轮读数继续显示（调用方据此写 `entry.error`）。
+ * 这与 pollGlm / pollOpencode / pollVolcesCoding / pollVolcesAgent 的既有语义一致。
+ *
+ * @param entry - `state.command`（已由 beginPoll 从上一轮铺底）。
+ * @param r - {@link commandReadings} 的返回值。
+ * @returns 本轮是否落盘了有效读数。
+ */
+function applyCommandReadings(entry, r) {
+	if (r.five === null && r.weekly === null && r.monthly === null) return false;
+	entry.five = r.five;
+	entry.weekly = r.weekly;
+	entry.monthly = r.monthly;
+	entry.plan = r.plan;
+	entry.monthlyCap = r.monthlyCap;
+	entry.monthlyCredits = r.monthlyCredits;
+	entry.fiveResetAt = r.fiveResetAt;
+	entry.weeklyResetAt = r.weeklyResetAt;
+	entry.available = true;
+	entry.stale = false;
+	entry.lastGoodTs = Date.now();
+	return true;
+}
 
 const num = (v, d) => {
 	const n = typeof v === 'number' ? v : v == null ? d : Number(v);
@@ -269,6 +366,7 @@ export function apply(ctx, config) {
 			deepseek: { configured: false, ts: 0 },
 			glm: { configured: false, ts: 0 },
 			opencode: { configured: false, ts: 0 },
+			command: { configured: false, ts: 0 },
 			volcesCoding: { configured: false, ts: 0 },
 			volcesAgent: { configured: false, ts: 0 },
 		};
@@ -374,6 +472,47 @@ export function apply(ctx, config) {
 					// 本轮无用量字段：保留上次成功数据（stale 保持 true），不覆盖为占位符
 					entry.error = '无用量字段';
 				}
+			} catch (e) { entry.error = '接口错误'; }
+		}
+		// ---- Command Code（command goat）配额 ----
+		// GET https://api.commandcode.ai/alpha/billing/credits，Authorization: Bearer <key>。
+		// 响应：credits.monthlyCredits = 月度额度**剩余**（美元），
+		// windowLimits.fiveHour / weekly = 两个滚动窗口的 {used, cap, resetAt}，单位同为信用值（美元）。
+		// 三个窗口与 GLM 面板一一对应：
+		//   5小时 = 100 − fiveHour.used/fiveHour.cap×100
+		//   1周   = 100 − weekly.used/weekly.cap×100
+		//   1月   = 100 − (月度上限 − monthlyCredits)/月度上限×100
+		// 月度上限接口不给，靠 (5h cap, 周 cap) 反查 COMMAND_PLANS；
+		// 也可以被配置项 commandMonthlyCap 覆盖（0 = 自动反查）。
+		// 兜底：档位认不出且配置也没给上限时，改用 /alpha/usage/summary 的 totalCost 反推总池
+		// （本期花费 / (花费 + 剩余)）——该接口在部分账号上恒回 0，所以只作最后手段。
+		async function pollCommand() {
+			const entry = state.command = beginPoll(state.command);
+			try {
+				const key = await creds.resolve('COMMAND_API_KEY');
+				if (!key || !key.value) { entry.error = '未配置'; return; }
+				entry.configured = true;
+				const res = await http('https://api.commandcode.ai/alpha/billing/credits', {
+					headers: [['Authorization', 'Bearer ' + key.value], ['Accept', 'application/json']],
+				});
+				if (res.status === 401 || res.status === 403) { entry.error = 'API Key 无效'; return; }
+				if (res.status !== 200) { entry.error = 'HTTP ' + res.status; return; }
+				const j = tryJson(res.body);
+				if (!j || typeof j !== 'object') { entry.error = '响应解析失败'; return; }
+				const cfgCap = num(readCfg().commandMonthlyCap, 0);
+				// 先不取 summary（多一次请求）；只有档位与配置都给不出月度上限时才回退去问它。
+				let r = commandReadings(j, cfgCap, null);
+				if (r.monthly === null) {
+					const sres = await http('https://api.commandcode.ai/alpha/usage/summary', {
+						headers: [['Authorization', 'Bearer ' + key.value], ['Accept', 'application/json']],
+					});
+					r = commandReadings(j, cfgCap, sres.status === 200 ? num((tryJson(sres.body) || {}).totalCost, 0) : null);
+				}
+				// 只有本轮真的取到数值才落盘；全空时保留上一轮（stale 保持 true），
+				// 与 pollGlm / pollOpencode / pollVolces* 同款。曾经这里先做 Object.assign(entry, r)：
+				// commandReadings 永远带 five/weekly/monthly 三个键，于是「无配额字段」那轮会把上次成功
+				// 的数值覆写成 null——面板一边提示「显示上次数据」、一边把数字显示成「—」。
+				if (!applyCommandReadings(entry, r)) entry.error = '无配额字段';
 			} catch (e) { entry.error = '接口错误'; }
 		}
 
@@ -516,7 +655,7 @@ export function apply(ctx, config) {
 			} catch (e) { entry.error = '接口错误'; }
 		}
 		async function pollAll() {
-			await Promise.all([refreshDeepseekPrices(false), pollDeepseek(), pollGlm(), pollOpencode(), pollVolcesCoding(), pollVolcesAgent()]);
+			await Promise.all([refreshDeepseekPrices(false), pollDeepseek(), pollGlm(), pollOpencode(), pollCommand(), pollVolcesCoding(), pollVolcesAgent()]);
 		}
 
 		// ---- session tree usage ----
@@ -691,6 +830,7 @@ export function apply(ctx, config) {
 			return {
 				providers: {
 					deepseek: state.deepseek, glm: state.glm, opencode: state.opencode,
+					command: state.command,
 					volcesCoding: state.volcesCoding, volcesAgent: state.volcesAgent,
 				},
 				session,
@@ -704,6 +844,7 @@ export function apply(ctx, config) {
 					priceFetchedAt: fetchedAt || 0,
 					entryVisibility: cfg.entryVisibility || {},
 					volcesTier: cfg.volcesTier || 'auto',
+					commandMonthlyCap: num(cfg.commandMonthlyCap, 0),
 				},
 				ts: now,
 			};
@@ -714,10 +855,19 @@ export function apply(ctx, config) {
 			res.writeHead(status, { 'cache-control': 'no-store', 'content-type': 'application/json; charset=utf-8' });
 			res.end(JSON.stringify(payload));
 		}
+		// DSH Desktop serves the UI from the custom `dsh-app://app` scheme and relays its
+		// fetches to this local server — and that relay attaches NO `Origin` header (only
+		// `Host` + the auth cookie). Treating a missing Origin as hostile 403s every write
+		// from the desktop app while leaving all GETs working. Mirror DSH's own policy for
+		// its local routes instead: refuse `sec-fetch-site: cross-site`, and require a
+		// *present* Origin to match Host. A cross-origin page always sends both, so an
+		// absent Origin is the desktop same-origin case rather than a forgery.
 		function sameOrigin(req) {
+			if (req.headers['sec-fetch-site'] === 'cross-site') return false;
 			const origin = req.headers.origin;
+			if (origin === undefined) return true;
 			const host = req.headers.host;
-			if (origin === undefined || host === undefined) return false;
+			if (host === undefined) return false;
 			try { return new URL(origin).host === host; } catch { return false; }
 		}
 		async function readJsonBody(req, maxBytes = 4096) {
@@ -805,7 +955,7 @@ export function apply(ctx, config) {
 						const vis = body.entryVisibility;
 						if (typeof vis !== 'object' || vis === null || Array.isArray(vis)) { sendJson(res, 400, { ok: false, error: 'bad args' }); return; }
 						// 只接受已知区块键：顺带清掉旧版本遗留的 entryVisibility 键（如 siliconflow）
-						const KNOWN = ['deepseek', 'glm', 'opencodeGo', 'qwen', 'volcesCoding', 'volcesAgent'];
+						const KNOWN = ['deepseek', 'glm', 'opencodeGo', 'command', 'qwen', 'volcesCoding', 'volcesAgent'];
 						const nextVis = {};
 						for (const k of KNOWN) nextVis[k] = vis[k] !== undefined ? !!vis[k] : true;
 						await writeCfg({ entryVisibility: nextVis });
@@ -829,3 +979,9 @@ export function apply(ctx, config) {
 		};
 	});
 }
+
+/**
+ * 仅供测试的纯函数出口：Credits 响应 → 三个窗口的剩余百分比，以及把它们落到 state 条目的语义。
+ * Loader 只读 `name` / `Config` / `apply` / `inject`，多余的具名导出没有副作用。
+ */
+export const __test = { commandReadings, commandPlan, applyCommandReadings, COMMAND_PLANS };

@@ -2,7 +2,7 @@
   "name": "api-monitor",
   "version": "0.2.0",
   "type": "module",
-  "main": "lib/index.js",
+  "main": "code/index.js",
   "description": "常驻 API 用量监控：DeepSeek/GLM Coding Plan/OpenCode Go/火山 Coding+Agent Plan 余额与配额，会话树 token 与花费（侧边栏入口 + 独立浮动窗）。",
   "keywords": [
     "dsh",
@@ -28,12 +28,12 @@
   },
   "license": "MIT",
   "exports": {
-    ".": "./lib/index.js",
-    "./client": "./lib/client.js",
+    ".": "./code/index.js",
+    "./client": "./code/client.js",
     "./package.json": "./package.json"
   },
   "files": [
-    "lib",
+    "code",
     "cordis.patch.yml"
   ],
   "dsh": {

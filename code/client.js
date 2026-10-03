@@ -30,7 +30,14 @@ window.__ModuleLoader__.load({
 			".am-dot-green{background:var(--dsw-alias-state-success-primary,#34c759)}.am-dot-yellow{background:var(--dsw-alias-state-warn-label,#ffcc00)}.am-dot-red{background:var(--dsw-alias-state-error-primary,#ff3b30)}.am-dot-dim{background:var(--dsw-alias-label-caption)}",
 			".am-iconbtn{display:flex;align-items:center;justify-content:center;width:34px;height:34px;border-radius:50%;border:none;background:transparent;color:var(--dsw-alias-label-secondary,#bbb);font-size:15px;cursor:pointer;flex:none}",
 			".am-iconbtn:hover{background:var(--dsw-alias-interactive-bg-hover,#333);color:var(--dsw-alias-label-primary,#eee)}",
-			".hHd-Xa_root:not(.hHd-Xa_collapsed) .hHd-Xa_footerActions{flex-direction:column;align-items:stretch}",
+			// The footer action container is a flex ROW in the shell, which squeezes the
+			// full-width entries (this one and 会话管理) side by side. Force the column the
+			// entries are designed for, and restore the shell's row in the collapsed rail.
+			// Matched on the stable `_footerActions` / `_collapsed` CSS-module suffix:
+			// the build hash in front of it changes on every DSH release, so a literal
+			// class name (the previous `.hHd-Xa_*`) silently stops matching.
+			"[class*='_footerActions']{flex-direction:column;align-items:stretch}",
+			"[class*='_collapsed'] [class*='_footerActions']{flex-direction:row;align-items:center}",
 			".am-backdrop{position:fixed;inset:0;z-index:20;background:var(--dsw-alias-bg-mask-1)}",
 			".am-panel{position:fixed;left:12px;bottom:108px;z-index:21;width:420px;max-width:calc(100vw - 24px);background:var(--dsw-alias-bg-layer-3);border:1px solid var(--dsw-alias-border-l2);border-radius:12px;box-shadow:var(--dsw-shadow-lv3,0 14px 44px rgba(0,0,0,.5));display:flex;flex-direction:column;max-height:60vh;overflow:hidden}",
 			".am-panelhead{box-sizing:border-box;flex:none;display:flex;justify-content:space-between;align-items:center;gap:8px;min-height:44px;padding:10px 12px}",
@@ -164,8 +171,18 @@ window.__ModuleLoader__.load({
 			const sTot = session.total || {};
 			const deepTok = byp.deepseek || {};
 			const glmTok = byp.glm || {};
+			const cmdTok = byp.command || {};
 			const ocTok = byp.opencode || {};
 			const vcTokFor = (kind) => (kind === "coding" ? byp.volces || {} : byp["volces-agent"] || {});
+			// Command Code 的额度以美元信用值计（不是 token），所以单独给一个 $ 显示：
+			// 先是「月度额度剩余」，认得出档位时再补一个「/ 月度上限」。
+			const usdCredits = (e) => {
+				if (!e) return "—";
+				const rem = Number(e.monthlyCredits);
+				if (!Number.isFinite(rem)) return "—";
+				const cap = Number(e.monthlyCap);
+				return "$" + rem.toFixed(2) + (Number.isFinite(cap) && cap > 0 ? " / $" + cap.toFixed(2) : "");
+			};
 
 			const keyConfigBtn = (which) => react.createElement("button", { className: "am-btn", onClick: (e) => { e.stopPropagation(); setKeyForm(which); } }, "key配置");
 			const blockTitle = (txt, onClickVis, shown) => react.createElement("div", { className: "am-row" },
@@ -201,6 +218,10 @@ window.__ModuleLoader__.load({
 			if (vis.glm !== false) {
 				const gm = p.glm || {};
 				vrows.push(react.createElement("div", { className: "am-vrow", key: "glm" }, dot(pctDot([gm.five, gm.weekly, gm.monthly])), react.createElement("span", { className: "am-vlbl" }, "GLM Plan"), react.createElement("span", { className: "am-vval" + (gm.stale ? " am-stale" : "") }, (gm.five !== null || gm.weekly !== null || gm.monthly !== null) ? (pctStr(gm.five) + "|" + pctStr(gm.weekly)) : (gm.error ? "—" : "…"))));
+			}
+			if (vis.command !== false) {
+				const cc = p.command || {};
+				vrows.push(react.createElement("div", { className: "am-vrow", key: "cc" }, dot(pctDot([cc.five, cc.weekly, cc.monthly])), react.createElement("span", { className: "am-vlbl" }, "Command GOAT"), react.createElement("span", { className: "am-vval" + (cc.stale ? " am-stale" : "") }, (cc.five !== null || cc.weekly !== null || cc.monthly !== null) ? (pctStr(cc.five) + "|" + pctStr(cc.weekly) + "|" + pctStr(cc.monthly)) : (cc.error ? "—" : "…"))));
 			}
 			if (vis.opencodeGo !== false) {
 				const oc = p.opencode || {};
@@ -280,6 +301,16 @@ window.__ModuleLoader__.load({
 					react.createElement("div", { className: "am-row" }, react.createElement("span", { className: "k" }, "本次会话token"), react.createElement("span", { className: "v" }, tokenRow(glmTok))),
 					p.glm && p.glm.stale ? react.createElement("div", { className: "am-stale-note" }, "↑ 显示上次数据（" + fmtTs(p.glm.lastGoodTs) + " 获取）") : null,
 					p.glm && p.glm.error ? react.createElement("div", { className: "am-err" }, p.glm.error) : null,
+				]),
+				panelBlock("command", "Command Code GOAT", [
+					react.createElement("div", { className: "am-row" }, react.createElement("span", { className: "k" }, "套餐档位"), react.createElement("span", { className: "v" }, (p.command && p.command.plan) || "—")),
+					react.createElement("div", { className: "am-row" }, react.createElement("span", { className: "k" }, "用量剩余"), react.createElement("span", { className: "v" }, "5小时 " + pctStr(p.command && p.command.five) + " / 1周 " + pctStr(p.command && p.command.weekly) + " / 1月 " + pctStr(p.command && p.command.monthly))),
+					react.createElement("div", { className: "am-row" }, react.createElement("span", { className: "k" }, "月度额度 (USD)"), react.createElement("span", { className: "v" }, usdCredits(p.command))),
+					react.createElement("div", { className: "am-row" }, react.createElement("span", { className: "k" }, "本次会话token"), react.createElement("span", { className: "v" }, tokenRow(cmdTok))),
+					p.command && p.command.stale ? react.createElement("div", { className: "am-stale-note" }, "↑ 显示上次数据（" + fmtTs(p.command.lastGoodTs) + " 获取）") : null,
+					p.command && p.command.error ? react.createElement("div", { className: "am-err" }, p.command.error) : null,
+					react.createElement("div", { className: "am-actions" },
+						react.createElement("button", { className: "am-btn", onClick: (e) => { e.stopPropagation(); window.open("https://commandcode.ai/studio", "_blank", "noopener"); } }, "查看用量")),
 				]),
 				panelBlock("opencodeGo", "OpenCode Go", [
 					react.createElement("div", { className: "am-row" }, react.createElement("span", { className: "k" }, "用量剩余"), react.createElement("span", { className: "v" }, "5小时 " + pctStr(p.opencode && p.opencode.rolling) + " / 1周 " + pctStr(p.opencode && p.opencode.weekly) + " / 1月 " + pctStr(p.opencode && p.opencode.monthly))),

@@ -1,8 +1,16 @@
 # api-monitor · 常驻 API 用量监控
 
+> **本插件的工作区布局**（规范见 [plugins/README.md](../README.md)）
+>
+> - `code/` 运行代码 ｜ `tests/` 测试代码 ｜ `docs/` 开发文档 ｜ `reference/` 参考资料
+> - `package.json` / `cordis.patch.yml` / `README.md` / `LICENSE` 是包契约文件，**必须留在本目录根**
+> - 状态：**休眠** ｜ 运行实体：`~/.dsh/profiles/desktop/plugins/api-monitor/`
+> - 本目录是**备份 + 开发文档存放处**；在此改动**不会自动生效**，需同步到 profile 并重启实例
+
 > 一个常驻的「我还有多少钱 / 还剩多少额度」面板：侧边栏底部一个「⛽ API 用量」竖排入口，
 > 点开是一扇 Cordis 风格的浮动窗，里面同时显示 DeepSeek 余额、GLM Coding Plan 配额、
-> OpenCode Go 用量、火山 Coding / Agent Plan 配额，以及**当前会话树**的 token 与花费。
+> OpenCode Go 用量、Command Code（command goat）三周期额度、火山 Coding / Agent Plan 配额，
+> 以及**当前会话树**的 token 与花费。
 >
 > 宿主半（`lib/index.js`）活在 dsh web 进程里，负责轮询各家接口 + 聚合会话用量，
 > 并通过同源 HTTP 路由 `/api-monitor/*` 把数据交给浏览器半（`lib/client.js`）。
@@ -25,8 +33,9 @@
 ## 特性
 
 - **一个入口看全部**：侧边栏底部竖排摘要（每个供应商一行 + 状态点），点开浮动窗看明细。
-- **5 路供应商轮询**：DeepSeek 余额、GLM（智谱 / Z.ai）配额、OpenCode Go 用量、
-  火山 Coding Plan（`GetCodingPlanUsage`）、火山 Agent Plan（`GetAFPUsage`）。
+- **6 路供应商轮询**：DeepSeek 余额、GLM（智谱 / Z.ai）配额、OpenCode Go 用量、
+  Command Code（command goat）三周期额度、火山 Coding Plan（`GetCodingPlanUsage`）、
+  火山 Agent Plan（`GetAFPUsage`）。
 - **stale-while-revalidate**：每轮轮询从上一轮结果起步，接口超时/失败时面板显示
   「↑ 显示上次数据（时间 获取）」而不是占位横杠。
 - **会话树用量与花费**：根会话 + `subagents.listDescendants()` 的子代理会话一起折叠；
@@ -35,6 +44,9 @@
   （北京时间周一至周五 9:00-12:00、14:00-18:00 为高峰），高峰/空闲分别给出用量与金额。
 - **官方价格自动抓取**：正则解析 DeepSeek 中文定价页，6 小时 TTL；解析失败或数字不合理时
   保留内置价目表，不回退成错误数字。
+- **Command Code 三周期额度**：5 小时滚动窗 / 7 天滚动窗 / 月度额度，与 GLM 面板同款表现
+  （侧边栏一行三个剩余 %，面板里「5小时 x / 1周 y / 1月 z」）。
+  月度上限接口不回，靠 `(5h cap, 周 cap)` 反查套餐档位（Go / Team Pro / GOAT / Pro / Max 10× / Max 20×）。
 - **零第三方依赖**：仅 Node 内置能力（`fetch` / `crypto.subtle`）与 `@deepseek-ai/schemastery`；
   火山签名用 `crypto.subtle` 手写 SigV4。
 
@@ -73,18 +85,21 @@
 | `priceTable` | dict(any) | `{}` | 单价覆盖表；支持平铺 `{in,cr,cw,out}`（旧键 `pi/pcr/pcw/po`）或 `{peak,offPeak}` 两种形态 |
 | `showCacheHitRate` | boolean | `true` | 面板是否显示「缓存命中率」行 |
 | `showResetTime` | boolean | `false` | 在配置里下发；**客户端代码未读取该字段** |
-| `entryVisibility` | object | 六项全 `true` | 各区块是否显示在侧边栏入口：`deepseek` / `glm` / `opencodeGo` / `qwen` / `volcesCoding` / `volcesAgent` |
+| `commandMonthlyCap` | number | `0` | Command Code 月度额度上限（美元）。`0` = 自动按 `(5h cap, 周 cap)` 反查档位；认不出档位且也为 0 时退化为 `summary.totalCost` 兜底 |
+| `entryVisibility` | object | 七项全 `true` | 各区块是否显示在侧边栏入口：`deepseek` / `glm` / `opencodeGo` / `command` / `qwen` / `volcesCoding` / `volcesAgent` |
 
 浮动窗内可直接改的只有：火山 AK/SK（「key配置」）、套餐档位下拉、每个区块的「显示在入口」勾选。
-`priceTable` / `pollIntervalSeconds` / 三个阈值 / `showCacheHitRate` 没有面板 UI，需直接改设置值。
+`priceTable` / `pollIntervalSeconds` / `commandMonthlyCap` / 三个阈值 / `showCacheHitRate` 没有面板 UI，需直接改设置值。
 
 ## 主要能力
 
 **宿主半**
 
-- 轮询并缓存 5 个数据源：`state.deepseek` / `glm` / `opencode` / `volcesCoding` / `volcesAgent`。
+- 轮询并缓存 6 个数据源：`state.deepseek` / `glm` / `opencode` / `command` / `volcesCoding` / `volcesAgent`。
   凭证经 `credentials.resolve()` 读取：`DEEPSEEK_API_KEY`、`BIGMODEL_API_KEY` 或 `ZAI_API_KEY`、
-  `VISION_API_KEY`、`VOLCES_API_KEY`（仅用于标记已配置）。
+  `VISION_API_KEY`、`COMMAND_API_KEY`、`VOLCES_API_KEY`（仅用于标记已配置）。
+  `command` 走 `GET https://api.commandcode.ai/alpha/billing/credits`（Bearer），
+  只在档位/配置都给不出月度上限时才追加一次 `/alpha/usage/summary`。
 - 会话用量：`subagents.listDescendants(rootId)` 收集 `kind === 'child'` 的子会话，
   总量取 `sessionProjections.snapshot(s).values.tokenUsage`，
   来源桶按 `assistant/message` 的 `source.provider` / `source.model` 归并，
@@ -98,7 +113,7 @@
   | POST | `/api-monitor/refresh` | 强制刷新官方价格 + 立刻轮询全部；校验同源 |
   | POST | `/api-monitor/set-volces-keys` | 写入 AK/SK 并立即重查火山；校验同源 |
   | POST | `/api-monitor/set-tier` | 写入 `volcesTier`；校验同源 |
-  | POST | `/api-monitor/set-visibility` | 写入 `entryVisibility`，只接受 6 个已知键；校验同源 |
+  | POST | `/api-monitor/set-visibility` | 写入 `entryVisibility`，只接受 7 个已知键；校验同源 |
 
 - **未注册**任何 model 工具、命令或事件监听；对外只有上面的 HTTP 路由与设置命名空间。
 
@@ -118,8 +133,12 @@ api-monitor/
 ├── package.json         # name/version 0.2.6；dsh.bundle.patch 指向 cordis.patch.yml；dsh.client（web）
 ├── cordis.patch.yml     # bundle patch 层：一行 insert 挂载 id/name = api-monitor
 └── lib/
-    ├── index.js         # 宿主半：settings 命名空间 + 5 路轮询 + 会话树聚合 + /api-monitor/* 路由
+    ├── index.js         # 宿主半：settings 命名空间 + 6 路轮询 + 会话树聚合 + /api-monitor/* 路由
     └── client.js        # 浏览器半（预构建产物，window.__ModuleLoader__.load 工厂）：侧边栏入口 + 浮动窗
+test/
+├── smoke-client-current-session.mjs  # 「当前会话 id」推导回归（真实 bundle + 假 React/DOM）
+├── smoke-command-credits.mjs         # Command Code 三周期折算 + 档位反查回归（可选打真实接口）
+└── _schemastery-stub.mjs             # 裸 node 跑宿主半时替换 @deepseek-ai/schemastery
 ```
 
 ## 备注 / 已知限制
@@ -135,7 +154,12 @@ api-monitor/
   在宿主 `parseQuotaRows` 里读成了 `reset`，但未进入对外快照。
 - **`qwen` 区块没有对应的宿主轮询**：`entryVisibility.qwen` 只控制侧边栏是否显示，
   Qwen 数据来自会话桶（token / 调用次数），额度行在客户端写死为「接口不可查」并给一个外部控制台链接。
-  因此 `state` 里只有 5 个供应商条目，而可见性键有 6 个。
+  因此 `state` 里只有 6 个供应商条目，而可见性键有 7 个（`command` 两者都有）。
+- **Command Code 的档位是「反查」出来的**：`/alpha/billing/credits` 不回月度上限，
+  插件用 `(5h cap, 周 cap)` 对照官方档位表（`COMMAND_PLANS`）取月度额度；
+  官方若调整某档位的 cap 数字，反查会落空并回退到 `summary.totalCost` 兜底（该接口在部分账号恒回 0，
+  此时月度行显示 `—`，5 小时/1 周两行仍正常）。可用 `commandMonthlyCap` 手工钉死。
+- **Command Code 额度单位是美元信用值**，不是 token；面板单独用 `$` 显示，不参与 DeepSeek 的峰谷计价。
 - **`pollIntervalSeconds` 只在 apply 时生效**（`Math.max(20, ...)`），改小/改大都要重启插件；
   客户端快照轮询 8 秒也是写死的。
 - **硬编码内容**：官方定价页 URL `https://api-docs.deepseek.com/zh-cn/quick_start/pricing`、
