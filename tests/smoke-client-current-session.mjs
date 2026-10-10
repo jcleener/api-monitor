@@ -12,7 +12,7 @@
  * just the source text.
  *
  * Usage: node test/smoke-client-current-session.mjs [path-to-client.js]
- * Default target is this repo's own ../lib/client.js.
+ * Default target is this repo's own ../code/client.js.
  * Exit: 0 = all PASS, 1 = at least one FAIL.
  */
 import fs from 'node:fs'
@@ -20,7 +20,7 @@ import path from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
-const CLIENT = process.argv[2] ?? path.join(HERE, '..', 'lib', 'client.js')
+const CLIENT = process.argv[2] ?? path.join(HERE, '..', 'code', 'client.js')
 
 const results = []
 const check = (step, ok, detail = '') => {

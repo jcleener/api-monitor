@@ -7,7 +7,7 @@
  *  2. 月度上限靠 (5h cap, 周 cap) 反查套餐档位：GOAT = $14/$35 → 月度 $70。
  *     同时锁定官方各档位的原始数字（文档 pricing-limits），避免表被改错。
  *
- * 默认走真实接口（读 ~/.dsh/.credentials.yaml 的 COMMAND_API_KEY）；
+ * 默认走真实接口（读 ~/.dsh/.credentials.yaml 的 COMMANDCODE_API_KEY，回退旧名 COMMAND_API_KEY）；
  * 拿不到 key 时只跑内置 fixture，不失败。
  *
  * Usage: node test/smoke-command-credits.mjs
@@ -20,7 +20,7 @@ import { registerHooks } from 'node:module'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
-const HOST = path.join(HERE, '..', 'lib', 'index.js')
+const HOST = path.join(HERE, '..', 'code', 'index.js')
 
 // 宿主半 import 了 @deepseek-ai/schemastery（只在 DSH 实例里可解析）；这里换成
 // 「怎么链都返回自己」的替身，好让本测试能在裸 node 下直接跑纯函数。
@@ -120,16 +120,28 @@ check('部分窗口有效时也算有效轮', applyCommandReadings(partialEntry,
   && partialEntry.five === partial.five && partialEntry.weekly === partial.weekly && partialEntry.monthly === null && partialEntry.plan === null)
 
 // ── 4. 真实接口（可选） ─────────────────────────────────────────────────────
+// 凭据库里 COMMANDCODE_API_KEY 的值**本身就是可用凭据**——实测 2026-10-10：93 字符、`u` 开头，
+// 直连 /alpha/billing/credits 返回 200（只是形状不是 `sk-`）。别因为它不像 API key 就误判成"引用"而跳过。
+// 只有肉眼可判的纯 UUID（不可能当 Bearer 用）才跳过。
 function readApiKey() {
   const p = path.join(os.homedir(), '.dsh', '.credentials.yaml')
   try {
-    const m = fs.readFileSync(p, 'utf8').match(/COMMAND_API_KEY:\s*(\S+)/)
-    return m ? m[1] : null
+    const text = fs.readFileSync(p, 'utf8')
+    for (const name of ['COMMANDCODE_API_KEY', 'COMMAND_API_KEY']) {
+      const m = text.match(new RegExp(name + ':\\s*(\\S+)'))
+      if (!m) continue
+      const value = m[1].replace(/^['"]|['"]$/g, '')
+      if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) return { ref: name }
+      return value
+    }
+    return null
   } catch { return null }
 }
 const key = readApiKey()
 if (key === null) {
-  console.log('SKIP  真实接口（~/.dsh/.credentials.yaml 里没有 COMMAND_API_KEY）')
+  console.log('SKIP  真实接口（~/.dsh/.credentials.yaml 里没有 COMMANDCODE_API_KEY / COMMAND_API_KEY）')
+} else if (typeof key === 'object') {
+  console.log(`SKIP  真实接口（${key.ref} 是纯 UUID，不可能当 Bearer 用）`)
 } else {
   try {
     const res = await fetch('https://api.commandcode.ai/alpha/billing/credits', {
@@ -148,4 +160,9 @@ if (key === null) {
 
 const failed = results.filter((x) => !x.ok)
 console.log(`\n${results.length - failed.length}/${results.length} PASS`)
-process.exit(failed.length === 0 ? 0 : 1)
+// 不要 process.exit()：本测试既用 registerHooks（模块加载钩子）又真发 fetch，
+// 退出时还有句柄在关闭，Windows 上会撞 libuv 断言
+// `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), src\win\async.c` ——
+// 表现是"全部 PASS 却以 0xC0000409 退出"，会让人误以为测试失败。
+// 设 exitCode 后让进程自然退出（undici 的 keep-alive 连接最迟几秒释放）。
+process.exitCode = failed.length === 0 ? 0 : 1

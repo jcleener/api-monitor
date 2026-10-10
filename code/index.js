@@ -489,11 +489,19 @@ export function apply(ctx, config) {
 		async function pollCommand() {
 			const entry = state.command = beginPoll(state.command);
 			try {
-				const key = await creds.resolve('COMMAND_API_KEY');
-				if (!key || !key.value) { entry.error = '未配置'; return; }
+				// 键名有两个来源，**两个都试**：DSH 的 provider 配置用的是 `COMMANDCODE_API_KEY`
+				// （profile 的 llm-pi-ai `providers.commandcode.apiKeyEnv` 就是它，也是 DSH 写进
+				// `.credentials.yaml` 的名字）；插件早期文档与 smoke 脚本用的是 `COMMAND_API_KEY`。
+				// 只认旧名 → 已在 DSH 里配好 command goat 的用户永远看到「未配置」（2026-10-10 实测）。
+				// 该值本身即可用作 Bearer（实测 93 字符、`u` 开头、直连返回 200），只是形状不像 sk-；
+				// 读取一律走 creds.resolve，不要自己去解析 .credentials.yaml。
+				let command = await creds.resolve('COMMANDCODE_API_KEY');
+				if (!command || !command.value) command = await creds.resolve('COMMAND_API_KEY');
+				if (!command || !command.value) { entry.error = '未配置'; return; }
 				entry.configured = true;
+				const key = command.value;
 				const res = await http('https://api.commandcode.ai/alpha/billing/credits', {
-					headers: [['Authorization', 'Bearer ' + key.value], ['Accept', 'application/json']],
+					headers: [['Authorization', 'Bearer ' + key], ['Accept', 'application/json']],
 				});
 				if (res.status === 401 || res.status === 403) { entry.error = 'API Key 无效'; return; }
 				if (res.status !== 200) { entry.error = 'HTTP ' + res.status; return; }
@@ -504,7 +512,7 @@ export function apply(ctx, config) {
 				let r = commandReadings(j, cfgCap, null);
 				if (r.monthly === null) {
 					const sres = await http('https://api.commandcode.ai/alpha/usage/summary', {
-						headers: [['Authorization', 'Bearer ' + key.value], ['Accept', 'application/json']],
+						headers: [['Authorization', 'Bearer ' + key], ['Accept', 'application/json']],
 					});
 					r = commandReadings(j, cfgCap, sres.status === 200 ? num((tryJson(sres.body) || {}).totalCost, 0) : null);
 				}

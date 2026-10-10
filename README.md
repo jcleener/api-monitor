@@ -97,7 +97,7 @@
 
 - 轮询并缓存 6 个数据源：`state.deepseek` / `glm` / `opencode` / `command` / `volcesCoding` / `volcesAgent`。
   凭证经 `credentials.resolve()` 读取：`DEEPSEEK_API_KEY`、`BIGMODEL_API_KEY` 或 `ZAI_API_KEY`、
-  `VISION_API_KEY`、`COMMAND_API_KEY`、`VOLCES_API_KEY`（仅用于标记已配置）。
+  `VISION_API_KEY`、`COMMANDCODE_API_KEY`（兼容旧名 `COMMAND_API_KEY`）、`VOLCES_API_KEY`（仅用于标记已配置）。
   `command` 走 `GET https://api.commandcode.ai/alpha/billing/credits`（Bearer），
   只在档位/配置都给不出月度上限时才追加一次 `/alpha/usage/summary`。
 - 会话用量：`subagents.listDescendants(rootId)` 收集 `kind === 'child'` 的子会话，
@@ -172,3 +172,15 @@ test/
   所以「各来源相加 ≤ 总览总量」是预期行为。
 - 宿主每轮轮询都用 `catch` 吞掉异常并写 `entry.error`（如「未配置」「HTTP 401」「接口错误」），
   面板只显示这一句短文案，日志里没有逐次堆栈（价格抓取失败会 `console.warn`）。
+- **Command Code 的凭据名有两个（0.2.1 修）**：本插件早期只认 `COMMAND_API_KEY`，而由 DSH 模型设置
+  写入 `.credentials.yaml` 的名字是 **`COMMANDCODE_API_KEY`**（即 profile 里 `providers.commandcode.apiKeyEnv`）。
+  后果：凡是在 DSH 里配好 command goat 的用户，面板恒显示「未配置」（2026-10-10 实测复现）。
+  现在按 `COMMANDCODE_API_KEY` → `COMMAND_API_KEY` 的顺序解析，两个名字都能用。
+  该值**本身就是可用凭据**（实测：93 字符、`u` 开头，直连 `/alpha/billing/credits` 返回 200，
+  解析出 `plan=GOAT / five=97.7% / weekly=94.1% / monthly=56.0%`），但形状不像 `sk-`，
+  别误判成"引用"；读取时走 `credentials.resolve()` 而不是自己解析文件。
+- **三份 smoke 测试曾长期全红（0.2.1 修）**：`smoke-command-credits` / `smoke-command-render` /
+  `smoke-client-current-session` 的默认目标路径写的是 `../lib/*`，而插件早已是 `code/*`
+  （提交 `20bc5b8` 同时做了 `lib/`→`code/` 改名并新增这三个测试，路径却仍指向 `lib/`，提交信息还声称
+  "测试内 `../lib/` 引用同步"——实际没有）。三份测试因此全部 `ERR_MODULE_NOT_FOUND`，
+  等于 52 项检查（26+15+11）长期无人执行。修好后全部通过。
